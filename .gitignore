@@ -25,5 +25,7 @@ stylus/*.css
 stylus/*.map
 *.log
 build/
-runtime/autosave
+saves/
 ui/bin
+electron/
+.settings/

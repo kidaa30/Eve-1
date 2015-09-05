@@ -126,7 +126,7 @@ module client {
       server.connected = false;
       server.dead = true;
       reconnect();
-      dispatch("setNotice", {content: `Error: Eve Server is Dead!`, type: "error", id: "server dead", duration: 0});
+      dispatch("setNotice", {content: `Error: Cannot communicate with Eve Server!`, type: "error", id: "server dead", duration: 0});
     }
 
     ws.onopen = function() {
@@ -152,7 +152,6 @@ module client {
 
 
       var initializing = !server.initialized;
-      server.initialized = true;
       if(data.commands) {
         for(let [command, ...args] of data.commands) {
           // If we are loading in this event, we should ignore tags and accept all diffs.
@@ -219,9 +218,14 @@ module client {
         var eventId = (ixer.facts("client event") || []).length; // Ensure eids are monotonic across sessions.
         uiEditorRenderer.setEventId(eventId);
         uiEditorRenderer.setSessionId(data.session); // Store server-assigned session id for use in client-controlled tables.
-        for(var initFunc of afterInitFuncs) {
-          initFunc();
+        // @NOTE: Is this the right behavior? Or should we GC the previous environment and initialize a new one?
+        if(!server.initialized) {
+          for(var initFunc of afterInitFuncs) {
+            initFunc();
+          }
         }
+
+        server.initialized = true;
       }
 
       time = now() - start;

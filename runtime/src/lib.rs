@@ -13,6 +13,7 @@ extern crate url;
 extern crate mime;
 extern crate bit_set;
 extern crate conduit_mime_types;
+extern crate getopts;
 
 macro_rules! time {
     ($name:expr, $expr:expr) => {{
@@ -35,5 +36,5 @@ pub mod view;
 pub mod flow;
 pub mod primitive;
 pub mod compiler;
-pub mod login;
+pub mod static_server;
 pub mod server;

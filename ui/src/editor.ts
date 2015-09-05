@@ -1,4 +1,5 @@
 /// <reference path="microReact.ts" />
+/// <reference path="ui.ts" />
 /// <reference path="api.ts" />
 /// <reference path="client.ts" />
 /// <reference path="tableEditor.ts" />
@@ -84,7 +85,7 @@ module drawn {
   // Utils
   //---------------------------------------------------------
 
-   function coerceInput(input) {
+   export function coerceInput(input) {
         if (input.match(/^-?[\d]+$/gim)) {
             return parseInt(input);
         }
@@ -108,14 +109,14 @@ module drawn {
         e.preventDefault();
     }
 
-    function focusOnce(node, elem) {
+    export function focusOnce(node, elem) {
         if (!node.__focused) {
             node.focus();
             node.__focused = true;
-            if(elem.contentEditable && node.firstChild) {
+            if(elem.contentEditable) {
               let range = document.createRange();
-              range.setStart(node.firstChild, node.textContent.length);
-              range.setEnd(node.firstChild, node.textContent.length);
+              range.selectNodeContents(node);
+              range.collapse(false);
               let sel = window.getSelection();
               sel.removeAllRanges();
               sel.addRange(range);
@@ -123,13 +124,26 @@ module drawn {
         }
     }
 
+    // Move the node vertically to ensure it doesn't run off the bottom on the screen.
+    function ensureOnscreen(node, elem) {
+      let maxTop = Math.max(document.documentElement.clientHeight, window.innerHeight || 0) - node.offsetHeight;
+      if(node.offsetTop > maxTop) {
+        node.style.top = maxTop;
+      }
+    }
+
 	//---------------------------------------------------------
   // Renderer
   //---------------------------------------------------------
 
-  export var renderer = new microReact.Renderer();
-  document.body.appendChild(renderer.content);
-  renderer.queued = false;
+  export var renderer;
+  function initRenderer() {
+    renderer = new microReact.Renderer();
+    document.body.appendChild(renderer.content);
+    renderer.queued = false;
+    window.addEventListener("resize", render);
+  }
+
   export function render() {
    if(renderer.queued === false) {
       renderer.queued = true;
@@ -137,7 +151,7 @@ module drawn {
       setTimeout(function() {
       // requestAnimationFrame(function() {
         var start = performance.now();
-        var tree = root();
+        var tree = window["drawn"].root();
         var total = performance.now() - start;
         if(total > 10) {
           console.log("Slow root: " + total);
@@ -148,33 +162,24 @@ module drawn {
     }
   }
 
-  window.addEventListener("resize", render);
-
   //---------------------------------------------------------
   // localState
   //---------------------------------------------------------
 
-  localState.selectedNodes = {};
-  localState.overlappingNodes = {};
-  localState.drawnUiActiveId = "itemSelector";
-  localState.errors = {};
-  localState.notices = {};
-  localState.selectedItems = {};
-  localState.tableEntry = {};
-  localState.saves = JSON.parse(localStorage.getItem("saves") || "[]");
-  localState.navigationHistory = [];
-
-  var fieldToEntity = {}
-
-  export var entities = [];
-  for(var field in fieldToEntity) {
-    var ent = fieldToEntity[field];
-    if (entities.indexOf(ent) === -1) {
-      entities.push(ent);
-    }
+  function initLocalstate() {
+    localState.selectedNodes = {};
+    localState.overlappingNodes = {};
+    localState.drawnUiActiveId = "itemSelector";
+    localState.errors = {};
+    localState.notices = {};
+    localState.selectedItems = {};
+    localState.tableEntry = {};
+    localState.saves = JSON.parse(localStorage.getItem("saves") || "[]");
+    localState.navigationHistory = [];
+    positions = {};
   }
 
-  export var positions = {}
+  export var positions;
 
   function loadPositions() {
     var loadedPositions = ixer.select("editor node position", {});
@@ -449,7 +454,7 @@ module drawn {
     return diffs;
   }
 
-  function addSourceFieldVariable(itemId, sourceViewId, sourceId, fieldId) {
+  export function addSourceFieldVariable(itemId, sourceViewId, sourceId, fieldId) {
     let diffs = [];
     let kind;
     // check if we're adding an ordinal
@@ -1504,7 +1509,7 @@ module drawn {
           }
           var factMap = {};
           for(var fieldIx = 0; fieldIx < info.mapping.length; fieldIx++) {
-            factMap[info.mapping[fieldIx]] = row[fieldIx] || "";
+            factMap[info.mapping[fieldIx]] = (row[fieldIx] === undefined) ? "" : row[fieldIx];
           }
           facts.push(factMap);
         }
@@ -1542,7 +1547,8 @@ module drawn {
             info.disabledMessage ? {c: "disabled-message", text: "Disabled because " + info.disabledMessage} : undefined,
           ]},
           x: info.x + 5,
-          y: info.y
+          y: info.y,
+          postRender: ensureOnscreen
         };
         if(!localState.tooltip) {
           localState.tooltipTimeout = setTimeout(function() {
@@ -1978,7 +1984,6 @@ module drawn {
             continue;
           }
           let fieldKind = field["field: kind"];
-          if(!entity) entity = fieldToEntity[fieldId];
           // we don't really want to use input field names as they aren't descriptive.
           // so we set the name only if this is an output or there isn't a name yet
           if(fieldKind === "output" || !name) {
@@ -2147,7 +2152,7 @@ module drawn {
   // root component
   //---------------------------------------------------------
 
-  function root() {
+  export function root() {
     var page:any;
     let viewId = localState.drawnUiActiveId;
     if(viewId !== "itemSelector") {
@@ -2196,17 +2201,16 @@ module drawn {
       }
     });
     let actions = {
-      "search": {func: startSearching, text: "Search", icon: "ion-ios-search-strong", description: "Search for items to open by name.", postSpacer: true},
-      "new": {func: startCreating, text: "New", description: "Add a new query or set of data."},
-      "import": {func: openImporter, text: "Import"},
-      "delete": {func: removeSelectedItems, text: "Delete", description: "Delete an item from the database."},
+      "new": {func: startCreating, text: "New", semantic: "action::addItem", description: "Add a new query or set of data."},
+      "import": {func: openImporter, text: "Import", semantic: "action::importItem"},
+      "delete": {func: removeSelectedItems, text: "Delete", semantic: "action::removeItem", description: "Delete an item from the database."},
     };
     let disabled = {};
     // if nothing is selected, then remove needs to be disabled
     if(!Object.keys(localState.selectedItems).length) {
       disabled["delete"] = "no items are selected to be removed. Click on one of the cards to select it.";
     }
-    return {c: "query-selector-wrapper", children: [
+    return {c: "query-selector-wrapper", semantic: "pane::itemSelector", children: [
       leftToolbar(actions, disabled),
       {c: "query-selector-body", click: clearSelectedItems, children: [
         {c: "query-selector-filter", children: [
@@ -2218,11 +2222,11 @@ module drawn {
           searching ? {c: "clear-search ion-close", clearSearch: true, click: stopSearching} : undefined,
         ]},
         (totalCount > 0) ?
-          {c: "query-selector", children: queries}          
+          {c: "query-selector", children: queries}
           : {c: "full-flex flex-center", children: [
             {c: "flex-row spaced-row", children: [
-              {text: "Click"}, {t: "button", c: "button", text: "New", click: startCreating}, {text: "or"},
-              {t: "button", c: "button", text: "Import", click: openImporter}, {text: "to begin working with Eve"}
+              {text: "Click"}, ui.button({text: "New", click: startCreating}), {text: "or"},
+              ui.button({text: "Import", click: openImporter}), {text: "to begin working with Eve"}
             ]}
           ]}
       ]}
@@ -2267,7 +2271,7 @@ module drawn {
       scale = 0.7;
     }
     let selected = localState.selectedItems[viewId] ? "selected" : "";
-    return {c: `query-item ${selected}`, id: viewId, itemId: viewId, click: selectItem, dblclick: openItem, children:[
+    return {c: `query-item ${selected}`, semantic: "item::query", id: viewId, itemId: viewId, click: selectItem, dblclick: openItem, children:[
       {c: "query-name", text: code.name(viewId)},
       // {c: "query-description", text: getDescription(viewId)},
       {c: "query", children: [
@@ -2293,7 +2297,7 @@ module drawn {
   // Left toolbar component
   //---------------------------------------------------------
 
-  function leftToolbar(actions, disabled = {}, extraKeys = {}) {
+  export function leftToolbar(actions, disabled = {}, extraKeys = {}) {
     var tools = [];
     let postSpacer = [];
     for(let actionName in actions) {
@@ -2302,7 +2306,9 @@ module drawn {
       if(glossary.lookup[action.text]) {
         description = glossary.lookup[action.text].description;
       }
-      let tool = {c: "tool", text: action.text, mouseover: showButtonTooltip, mouseout: hideButtonTooltip, description};
+
+      if(!action.semantic) { throw new Error("action:" + JSON.stringify(action) + " needs a semantic attribute."); }
+      let tool = {c: "tool", text: action.text, semantic: action.semantic, mouseover: showButtonTooltip, mouseout: hideButtonTooltip, description};
       if(action["icon"]) {
         tool.text = undefined;
         tool["title"] = action.text;
@@ -2332,9 +2338,20 @@ module drawn {
     for(let tool of postSpacer) {
       tools.push(tool);
     }
+
+    // add the search button
+    tools.push({c: "tool ion-ios-search-strong",
+                title: "Search",
+                semantic: "action::search",
+                mouseover: showButtonTooltip,
+                mouseout: hideButtonTooltip,
+                click: startSearching,
+                description: "Search for items to open by name."})
+
     // add the settings at the very end
     tools.push({c: "tool ion-gear-b",
                 title: "Settings",
+                semantic: "action::settings",
                 mouseover: showButtonTooltip,
                 mouseout: hideButtonTooltip,
                 click: openSettings,
@@ -2373,13 +2390,14 @@ module drawn {
     dispatch("hideTooltip", {});
   }
 
-  let settingsPanes = {
-    "save": {
+  let settingsPanes:ui.Pane[] = [
+    {
+      id: "save",
       title: "Save",
       content: function() {
         let saves = localState.saves || [];
         let selected = localState.selectedSave;
-        return [
+        return {semantic: "pane::save", children: [
 
           (saves.length ? {children: [
             {t: "h3", text: "Recent"},
@@ -2392,42 +2410,44 @@ module drawn {
             }})}
           ]} : undefined),
           {c: "input-row", children: [
-            {c: "label", text: "name"},
-            {t: "input", type: "text", input: setSaveLocation, value: localState.selectedSave},
+            {c: "label", text: "File name"},
+            ui.input({input: setSaveLocation, value: localState.selectedSave}),
           ]},
           {c: "flex-row", children: [
-            {c: "button", text: "Save to gist (remote)", click: saveToGist},
-            {c: "button", text: "Save to file (local)", click: overwriteSave},
+            ui.button({text: "Save to gist (remote)", click: saveToGist}),
+            ui.button({text: "Save to file (local)", click: overwriteSave}),
           ]}
-        ];
+        ]};
       }
     },
-    "load": {
+    {
+      id: "load",
       title: "Load",
       content: function() {
         let saves = localState.saves || [];
         let selected = localState.selectedSave;
-        return [
+        return {semantic: "pane::load", children: [
           {c: "input-row", children: [
             {c: "label", text: "url"},
-            {t: "input", type: "text", input: setSaveLocation, value: localState.selectedSave},
-            {c: "button", text: "Load from gist (remote)", click: loadFromGist}
+            ui.input({input: setSaveLocation, value: localState.selectedSave}),
+            ui.button({text: "Load from gist (remote)", click: loadFromGist})
           ]},
           {c: "input-row", children: [
             {t: "input", type: "file", change: setSaveFile},
-            {c: "button", text: "Load from file (local)", click: loadSave},
+            ui.button({text: "Load from file (local)", click: loadSave}),
           ]}
-        ]
+        ]};
       }
     },
-    "preferences": {
+    {
+      id: "preferences",
       title: "Preferences",
-      content: () =>  {
+      content: () => {
         let showHidden;
         if(localStorage["showHidden"]) {
-          showHidden = {c: "button", click: toggleHidden, text: "Hide hidden"};
+          showHidden = ui.button({click: toggleHidden, text: "Hide hidden"});
         } else {
-          showHidden = {c: "button", click: toggleHidden, text: "Show hidden"};
+          showHidden = ui.button({click: toggleHidden, text: "Show hidden"});
         }
         let theme;
         let curTheme = localStorage["theme"];
@@ -2436,15 +2456,13 @@ module drawn {
         } else {
           theme = {c: `button ${curTheme}`, click: toggleTheme, text: "Dark"};
         }
-        return [
-          {c: "preferences", children: [
-            theme,
-            showHidden,
-          ]}
-        ];
+        return {c: "preferences", semantic: "pane::preferences", children: [
+          theme,
+          showHidden,
+        ]};
       }
     }
-  };
+  ];
 
   function toggleHidden(e, elem) {
     dispatch("toggleHidden", {});
@@ -2455,16 +2473,9 @@ module drawn {
   }
 
   function settingsPanel() {
-    let current = settingsPanes[localState.currentTab] ? localState.currentTab : "preferences";
-    let tabs = [];
-    for(let tab in settingsPanes) {
-      tabs.push({c: (tab === current) ? "tab active" : "tab", tab, text: settingsPanes[tab].title, click: switchTab});
-    }
-
-    return {c: "settings-panel tabbed-box", children: [
-      {c: "tabs", children: tabs.concat({c: "flex-spacer"}, {c: "ion-close tab", click: closeTooltip})},
-      {c: "pane", children: settingsPanes[current].content()}
-    ]};
+    return ui.tabbedBox(
+      {id: "settings-pane", semantic: "pane::settings", defaultTab: "preferences", panes: settingsPanes, controls: [{c: "ion-close tab", click: closeTooltip}]}
+    );
   }
 
   function switchTab(evt, elem) {
@@ -2476,7 +2487,7 @@ module drawn {
   }
 
   function setSaveLocation(evt, elem) {
-    dispatch("selectSave", {save: evt.currentTarget.value});
+    dispatch("selectSave", {save: evt.currentTarget.textContent});
   }
 
   function setSaveFile(evt, elem) {
@@ -2503,11 +2514,9 @@ module drawn {
   // Tooltip component
   //---------------------------------------------------------
 
-  function tooltipUi(): any {
+  export function tooltipUi(): any {
     let tooltip = localState.tooltip;
     if(tooltip) {
-      let viewHeight = Math.max(document.documentElement.clientHeight, window.innerHeight || 0);
-       // @FIXME: We need to get the actual element size here.
       let elem:any = {c: "tooltip" + (tooltip.c ? " " + tooltip.c : ""), left: tooltip.x, top: tooltip.y};
       if(typeof tooltip.content === "string") {
         elem["text"] = tooltip.content;
@@ -2515,6 +2524,9 @@ module drawn {
         elem["children"] = [tooltip.content()];
       } else {
         elem["children"] = [tooltip.content];
+      }
+      if(tooltip.postRender) {
+        elem["postRender"] = tooltip.postRender;
       }
       if(tooltip.persistent) {
         return {id: "tooltip-container", c: "tooltip-container", children: [
@@ -2530,7 +2542,7 @@ module drawn {
   // Notice component
   //---------------------------------------------------------
 
-  function notice() {
+  export function notice() {
     let noticeItems = [];
     for(let noticeId in localState.notices) {
       let notice = localState.notices[noticeId];
@@ -2563,16 +2575,16 @@ module drawn {
   }
 
   function creator() {
-    return {c: "creator", children: [
+    return {c: "creator", semantic: "pane::addItem", children: [
       {c: "header", text: "New"},
       {c: "description", text: "Select a kind of item to create."},
       {c: "types", children: [
         {c: "type-container", children: [
-          {c: "type", text: "Data", click: createNewItem, kind: "table", newName: "New table!"},
+          {c: "type", text: "Data", semantic: "action::addDataItem", click: createNewItem, kind: "table", newName: "New table!"},
           {text: glossary.lookup["Data"].description}
         ]},
         {c: "type-container", children: [
-          {c: "type", text: "Query", click: createNewItem, kind: "join", newName: "New query!"},
+          {c: "type", text: "Query", semantic: "action::addQueryItem", click: createNewItem, kind: "join", newName: "New query!"},
           {text: glossary.lookup["Query"].description}
         ]},
         // {c: "type-container", children: [
@@ -2597,24 +2609,23 @@ module drawn {
     dispatch("showTooltip", tooltip);
   }
 
+  let importPanes:ui.Pane[] = [
+    {id: "csv", title: "CSV", content: function() {
+      return {semantic: "pane::csv", children: [
+        {t: "input", type: "file", change: updateCsvFile},
+        {c: "flex-row spaced-row", children: [
+          {text: "Treat first row as header"},
+          ui.checkbox({change: updateCsvHasHeader})
+        ]},
+        ui.button({text: "Import", click: importFromCsv})
+      ]};
+    }}
+  ];
+
   function importPanel() {
-    let current = "csv";
-    return {c: "import-panel tabbed-box", children: [
-      {c: "tabs", children: [
-        {c:  ("csv" === current) ? "tab active" : "tab", text: "CSV"},
-        {c: "flex-spacer"}, {c: "ion-close tab", click: closeTooltip}]},
-      {c: "pane", children: (localState.importing) ?
-        [{text: "importing..."}] :
-        [
-          {t: "input", type: "file", change: updateCsvFile},
-          {c: "flex-row spaced-row", children: [
-            {text: "Treat first row as header"},
-            {t: "input", type: "checkbox", change: updateCsvHasHeader}
-          ]},
-          {c: "button", text: "import", click: importFromCsv}
-        ]
-      }
-    ]};
+    return ui.tabbedBox(
+      {id: "import-pane", semantic: "pane::import", defaultTab: "csv", panes: importPanes, controls: [{c: "ion-close tab", click: closeTooltip}]}
+    );
   }
 
   function updateCsvFile(evt, elem) {
@@ -2664,13 +2675,13 @@ module drawn {
     if(viewDescription) {
       description = viewDescription["view description: description"];
     }
-    return {c: "workspace query-workspace", children: [
+    return {c: "workspace query-workspace", semantic: "pane::queryEditor", children: [
       localState.drawnUiActiveId !== "itemSelector" ? queryTools(view, entityInfo) : undefined,
       {c: "container", children: [
         {c: "surface", children: [
           {c: "query-editor", children: [
-            {c: "query-name-input", contentEditable: true, blur: rename, renameId: viewId, text: code.name(viewId)},
-            {c: "query-description-input", contentEditable: true, blur: setQueryDescription, viewId, text: description},
+            ui.input({c: "query-name-input", blur: rename, renameId: viewId, text: code.name(viewId)}),
+            ui.input({c: "query-description-input", blur: setQueryDescription, viewId, text: description}),
             queryCanvas(view, entityInfo),
           ]},
           queryErrors(view),
@@ -2848,7 +2859,7 @@ module drawn {
         }
         content.push({c: "error-description", children: [
           {text: curNode.error},
-          {c: "button", node: curNode, text: "remove", click: action},
+          ui.button({node: curNode, text: "remove", click: action}),
         ]});
       }
     }
@@ -2879,6 +2890,7 @@ module drawn {
       }
       content.push(filterUi);
     }
+
     var elem = {c: "item " + klass, selected: uiSelected, width, height,
                 mousedown: selectNode, draggable: true, dragstart: storeDragOffset,
                 drag: setNodePosition, dragend: finalNodePosition, node: curNode, text};
@@ -3070,20 +3082,19 @@ module drawn {
       // What tools are available depends on what is selected.
       // no matter what though you should be able to go back to the
       // query selector and search.
-      "Back": {func: navigateBack, text: "Back", description: "Return to the item selection page"},
-      "Search": {func: startSearching, icon: "ion-ios-search-strong", text: "Search", description: "Find sources to add to your query", postSpacer: true},
+      "Back": {func: navigateBack, text: "Back", semantic: "action::back", description: "Return to the item selection page"},
       // These may get changed below depending on what's selected and the
       // current state.
-      "rename": {func: startRenamingSelection, text: "Rename"},
-      "remove": {func: removeSelection, text: "Remove"},
-      "join": {func: joinSelection, text: "Join"},
-      "select": {func: selectAttribute, text: "Show"},
-      "filter": {func: addFilter, text: "Filter"},
-      "group": {func: groupAttribute, text: "Group"},
-      "sort": {func: startSort, text: "Sort"},
-      "chunk": {func: chunkSource, text: "Chunk"},
-      "ordinal": {func: addOrdinal, text: "Ordinal"},
-      "negate": {func: negateSource, text: "Negate"},
+      "rename": {func: startRenamingSelection, text: "Rename", semantic: "action::rename"},
+      "remove": {func: removeSelection, text: "Remove", semantic: "action::remove"},
+      "join": {func: joinSelection, text: "Join", semantic: "action::toggleJoin"},
+      "select": {func: selectAttribute, text: "Show", semantic: "action::togleShow"},
+      "filter": {func: addFilter, text: "Filter", semantic: "action::toggleFilter"},
+      "group": {func: groupAttribute, text: "Group", semantic: "action::toggleGroup"},
+      "sort": {func: startSort, text: "Sort", semantic: "action::sort"},
+      "chunk": {func: chunkSource, text: "Chunk", semantic: "action::toggleChunk"},
+      "ordinal": {func: addOrdinal, text: "Ordinal", semantic: "action::toggleOrdinal"},
+      "negate": {func: negateSource, text: "Negate", semantic: "action::toggleNegate"},
     }
 
     let selectionContainsErrors = false;
@@ -3139,25 +3150,25 @@ module drawn {
           }
           disabled["join"] = "multiple attributes aren't joined together on this node.";
         } else {
-          actions["join"] = {func: unjoinNodes, text: "Unjoin"};
+          actions["join"] = {func: unjoinNodes, text: "Unjoin", semantic: "action::toggleJoin"};
         }
 
         if(ixer.selectOne("ordinal binding", {variable: node.variable})) {
-          actions["ordinal"] = {func: removeOrdinal, text: "Unordinal"};
+          actions["ordinal"] = {func: removeOrdinal, text: "Unordinal", semantic: "action::toggleOrdinal"};
         } else {
           disabled["ordinal"] = "ordinal only applies to sources or ordinal nodes";
         }
 
         if(ixer.selectOne("select", {variable: node.variable})) {
-          actions["select"] = {func: unselectAttribute, text: "Hide"};
+          actions["select"] = {func: unselectAttribute, text: "Hide", semantic: "action::toggleSelect"};
         }
         if(node.filter) {
-          actions["filter"] = {func: removeFilter, text: "Unfilter"};
+          actions["filter"] = {func: removeFilter, text: "Unfilter", semantic: "action::toggleFilter"};
         }
         // if this node's source is chunked or there's an ordinal binding, we can group
         if(node.sourceChunked || node.sourceHasOrdinal) {
           if(node.grouped) {
-            actions["group"] = {func: ungroupAttribute, text: "Ungroup"};
+            actions["group"] = {func: ungroupAttribute, text: "Ungroup", semantic: "action::toggleGroup"};
           }
         } else {
           disabled["group"] = "To group an attribute, the source must either have an ordinal or be chunked";
@@ -3169,13 +3180,13 @@ module drawn {
         disabled["group"] = "group only applies to attributes.";
         disabled["join"] = "join only applies to attributes.";
         if(node.chunked) {
-          actions["chunk"] = {func: unchunkSource, text: "Unchunk"};
+          actions["chunk"] = {func: unchunkSource, text: "Unchunk", semantic: "action::toggleChunk"};
         }
         if(node.isNegated) {
-          actions["negate"] = {func: unnegateSource, text: "Unnegate"};
+          actions["negate"] = {func: unnegateSource, text: "Unnegate", semantic: "action::toggleNegate"};
         }
         if(node.hasOrdinal) {
-          actions["ordinal"] = {func: removeOrdinal, text: "Unordinal"};
+          actions["ordinal"] = {func: removeOrdinal, text: "Unordinal", semantic: "action::toggleOrdinal"};
         }
 
       } else if(node.type === "primitive") {
@@ -3216,9 +3227,9 @@ module drawn {
         // in the selection
         let root = selectedNodes[0];
         if(ixer.selectOne("select", {variable: root.variable})) {
-          actions["select"] = {func: unselectSelection, text: "Hide"};
+          actions["select"] = {func: unselectSelection, text: "Hide", semantic: "action::toggleSelect"};
         } else {
-          actions["select"] = {func: selectSelection, text: "Show"};
+          actions["select"] = {func: selectSelection, text: "Show", semantic: "action::toggleSelect"};
         }
       }
     }
@@ -3400,7 +3411,7 @@ module drawn {
       {c: "searcher-shade", mousedown: stopSearching},
       {c: "searcher", children: [
         {c: "search-results", children: resultGroups},
-        {t: "textarea", c: "search-box", postRender: focusOnce, value: localState.searchingFor, input: updateSearch, keydown: handleSearchKey}
+        ui.input({c: "search-box", multiline: true, postRender: focusOnce, text: localState.searchingFor, input: updateSearch, keydown: handleSearchKey})
       ]}
     ]};
   }
@@ -3425,7 +3436,7 @@ module drawn {
   }
 
   function updateSearch(e, elem) {
-    dispatch("updateSearch", {value: e.currentTarget.value});
+    dispatch("updateSearch", {value: e.currentTarget.textContent});
   }
 
   //---------------------------------------------------------
@@ -3514,7 +3525,7 @@ module drawn {
 
    function tableItem(tableId) {
      let selected = localState.selectedItems[tableId] ? "selected" : "";
-    return {c: `table-item ${selected}`, itemId: tableId, click: selectItem, dblclick: openItem, children: [
+    return {c: `table-item ${selected}`, semantic: "item::data", itemId: tableId, click: selectItem, dblclick: openItem, children: [
       tableForm(tableId)
     ]};
   }
@@ -3526,14 +3537,14 @@ module drawn {
     let maxRenderedEntries = 100;
     let disabled = {};
     let actions = {
-      "back": {text: "Back", func: navigateBack, description: "Return to the item selection page"},
-      "new": {text: "+Entry", func: newTableEntry, description: "Create a new entry"},
-      "delete": {text: "-Entry", func: deleteTableEntry, description: "Remove the current entry"},
-      "add field": {text: "+Field", func: addFieldToTable, description: "Add a field to the card"},
+      "back": {text: "Back", semantic: "action::back", func: navigateBack, description: "Return to the item selection page"},
+      "new": {text: "+Entry", semantic: "action::addEntry", func: newTableEntry, description: "Create a new entry"},
+      "delete": {text: "-Entry", semantic: "action::removeEntry", func: deleteTableEntry, description: "Remove the current entry"},
+      "add field": {text: "+Field", semantic: "action::addField", func: addFieldToTable, description: "Add a field to the card"},
       // remove field needs to set the useMousedown flag because we need to know what field was active when
       // the button is pressed. If we use click, the field will have been blurred by the time the event goes
       // through
-      "remove field": {text: "-Field", func: removeFieldFromTable, description: "Remove the active field from the card", useMousedown: true}
+      "remove field": {text: "-Field", semantic: "action::removeField", func: removeFieldFromTable, description: "Remove the active field from the card", useMousedown: true}
     };
     if(!localState.selectedTableEntry) {
       disabled["delete"] = " no entry is selected";
@@ -3546,7 +3557,7 @@ module drawn {
     if(resultViewSize > maxRenderedEntries) {
       sizeText = `${maxRenderedEntries} of ` + sizeText;
     }
-    return {c: "workspace table-workspace", children: [
+    return {c: "workspace table-workspace", semantic: "pane::dataEditor", children: [
       leftToolbar(actions, disabled),
       {c: "container", children: [
         {c: "surface", children: [
@@ -3582,7 +3593,7 @@ module drawn {
         {c: "form-description", contentEditable: true, blur: setQueryDescription, viewId: tableId, text: getDescription(tableId)},
         {c: "form-fields", children: fields},
         sizeUi,
-        {c: "submit-button", click: submitTableEntry, text: "submit"}
+        ui.button({click: submitTableEntry, text: "Submit"})
       ]},
     ]};
   }
@@ -3685,55 +3696,57 @@ module drawn {
   // input handling
   //---------------------------------------------------------
 
-  document.addEventListener("keydown", function(e) {
-    var KEYS = api.KEYS;
-    //Don't capture keys if we're focused on an input of some kind
-    var target: any = e.target;
-    if(e.defaultPrevented
-       || target.nodeName === "INPUT"
-       || target.getAttribute("contentEditable")
-       || target.nodeName === "TEXTAREA") {
-      return;
-    }
-
-    //undo + redo
-    if((e.metaKey || e.ctrlKey) && e.shiftKey && e.keyCode === KEYS.Z) {
-      dispatch("redo", null);
-      e.preventDefault();
-    } else if((e.metaKey || e.ctrlKey) && e.keyCode === KEYS.Z) {
-      dispatch("undo", null);
-      e.preventDefault();
-    }
-
-    //remove
-    if(e.keyCode === KEYS.BACKSPACE) {
-      dispatch("removeSelection", {nodes: localState.selectedNodes});
-      e.preventDefault();
-    }
-
-    if((e.ctrlKey || e.metaKey) && e.keyCode === KEYS.F) {
-      dispatch("startSearching", {value: ""});
-      e.preventDefault();
-    }
-  });
-
-  document.addEventListener("dragover", (e) => e.preventDefault());
-  document.addEventListener("drop", function(e) {
-    let files = e.dataTransfer.files;
-    if(files.length) {
-      dispatch("importFiles", {files: files});
-    }
-    e.preventDefault();
-  });
-
-  // @HACK: Because FF is a browser full of sadness...
   var __firefoxMouseX, __firefoxMouseY;
-  function firefoxDragMoveHandler(evt) {
-    __firefoxMouseX = evt.clientX;
-    __firefoxMouseY = evt.clientY;
-  }
-  if(navigator.userAgent.indexOf("Firefox") !== -1) {
-    document.body.addEventListener("dragover", firefoxDragMoveHandler, false);
+  function initInputHandling() {
+    document.addEventListener("keydown", function(e) {
+      var KEYS = api.KEYS;
+      //Don't capture keys if we're focused on an input of some kind
+      var target: any = e.target;
+      if(e.defaultPrevented
+         || target.nodeName === "INPUT"
+         || target.getAttribute("contentEditable")
+         || target.nodeName === "TEXTAREA") {
+        return;
+      }
+
+      //undo + redo
+      if((e.metaKey || e.ctrlKey) && e.shiftKey && e.keyCode === KEYS.Z) {
+        dispatch("redo", null);
+        e.preventDefault();
+      } else if((e.metaKey || e.ctrlKey) && e.keyCode === KEYS.Z) {
+        dispatch("undo", null);
+        e.preventDefault();
+      }
+
+      //remove
+      if(e.keyCode === KEYS.BACKSPACE) {
+        dispatch("removeSelection", {nodes: localState.selectedNodes});
+        e.preventDefault();
+      }
+
+      if((e.ctrlKey || e.metaKey) && e.keyCode === KEYS.F) {
+        dispatch("startSearching", {value: ""});
+        e.preventDefault();
+      }
+    });
+
+    document.addEventListener("dragover", (e) => e.preventDefault());
+    document.addEventListener("drop", function(e) {
+      let files = e.dataTransfer.files;
+      if(files.length) {
+        dispatch("importFiles", {files: files});
+      }
+      e.preventDefault();
+    });
+
+    // @HACK: Because FF is a browser full of sadness...
+    function firefoxDragMoveHandler(evt) {
+      __firefoxMouseX = evt.clientX;
+      __firefoxMouseY = evt.clientY;
+    }
+    if(navigator.userAgent.indexOf("Firefox") !== -1) {
+      document.body.addEventListener("dragover", firefoxDragMoveHandler, false);
+    }
   }
 
   //---------------------------------------------------------
@@ -3752,8 +3765,15 @@ module drawn {
   // Go!
   //---------------------------------------------------------
   client.setDispatch(dispatch);
-  client.afterInit(() => {
+  if(!window["eveInitialized"]) {
+    initLocalstate();
+    window["eveInitialized"] = true;
     api.checkVersion(maybeShowUpdate);
+  }
+  client.afterInit(() => {
+    initRenderer();
+    initInputHandling();
+    ui.init(localState, render);
     loadPositions();
     render();
   });

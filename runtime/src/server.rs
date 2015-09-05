@@ -6,6 +6,7 @@ use websocket::server::sender;
 use websocket::stream::WebSocketStream;
 use std::io::prelude::*;
 use std::fs::{OpenOptions};
+use std::path::Path;
 use rustc_serialize::json::{Json, ToJson};
 use cbor;
 
@@ -117,20 +118,20 @@ impl FromJson for Event {
 
 // --- persistence ---
 
-pub fn read_file(filename: &str) -> String {
-    let mut file = OpenOptions::new().create(true).open(filename).unwrap();
+pub fn read_file<P: AsRef<Path>>(path: P) -> String {
+    let mut file = OpenOptions::new().create(true).open(path).unwrap();
     let mut contents = String::new();
     file.read_to_string(&mut contents).unwrap();
     contents
 }
 
-pub fn write_file(filename: &str, contents: &str) {
-    let mut file = OpenOptions::new().create(true).truncate(true).write(true).open(filename).unwrap();
+pub fn write_file<P: AsRef<Path>>(path: P, contents: &str) {
+    let mut file = OpenOptions::new().create(true).truncate(true).write(true).open(path).unwrap();
     file.write_all(contents.as_bytes()).unwrap();
 }
 
-pub fn load(flow: &mut Flow, filename: &str) {
-    for line in read_file(filename).lines() {
+pub fn load<P: AsRef<Path>>(flow: &mut Flow, path: P) {
+    for line in read_file(path).lines() {
         let json = Json::from_str(&line).unwrap();
         let event: Event = FromJson::from_json(&json);
         flow.quiesce(event.changes);
@@ -138,10 +139,10 @@ pub fn load(flow: &mut Flow, filename: &str) {
 }
 
 // TODO should probably just save changes, not the whole event
-pub fn save(flow: &Flow, filename: &str) {
+pub fn save<P: AsRef<Path>>(flow: &Flow, path: P) {
     let changes = flow.as_changes();
     let text = format!("{}", Event{changes: changes, commands: vec![]}.to_json());
-    write_file(filename, &text[..]);
+    write_file(path, &text[..]);
 }
 
 // --- server ---
@@ -198,10 +199,10 @@ pub fn server_events() -> mpsc::Receiver<ServerEvent> {
     event_receiver
 }
 
-pub fn handle_event(server: &mut Server, event: Event, event_json: Json) {
+pub fn handle_event(server: &mut Server, event: Event, event_json: Json, saves_dir: &Path) {
     // save the event
     {
-        let mut autosave = OpenOptions::new().write(true).append(true).open("./autosave").unwrap();
+        let mut autosave = OpenOptions::new().write(true).append(true).open(saves_dir.join("autosave")).unwrap();
         autosave.write_all(format!("{}", event_json).as_bytes()).unwrap();
         autosave.write_all("\n".as_bytes()).unwrap();
         autosave.flush().unwrap();
@@ -220,26 +221,22 @@ pub fn handle_event(server: &mut Server, event: Event, event_json: Json) {
         match &borrowed_words[..] {
             ["load", filename] => {
                 server.flow = Flow::new();
-                load(&mut server.flow, "./bootstrap");
-                load(&mut server.flow, filename);
-                save(&server.flow, "./autosave");
-                let current_dir = ::std::env::current_dir().unwrap().to_str().unwrap().to_owned();
-                response_commands.push(vec!["loaded".to_owned(), current_dir, filename.to_owned()]);
+                load(&mut server.flow, saves_dir.join(filename));
+                save(&server.flow, saves_dir.join("autosave"));
+                response_commands.push(vec!["loaded".to_owned(), saves_dir.join(filename).to_str().unwrap().to_owned()]);
             }
             ["save", filename] => {
-                save(&server.flow, filename);
-                let current_dir = ::std::env::current_dir().unwrap().to_str().unwrap().to_owned();
-                response_commands.push(vec!["saved".to_owned(), current_dir, filename.to_owned()]);
+                save(&server.flow, saves_dir.join(filename));
+                response_commands.push(vec!["saved".to_owned(), saves_dir.join(filename).to_str().unwrap().to_owned()]);
             }
             ["get events", id] => {
-                let events_string = read_file("./autosave");
+                let events_string = read_file(saves_dir.join("autosave"));
                 response_commands.push(vec!["events got".to_owned(), id.to_owned(), events_string]);
             }
             ["set events", id, events_string] => {
-                write_file("./autosave", events_string);
+                write_file(saves_dir.join("autosave"), events_string);
                 server.flow = Flow::new();
-                load(&mut server.flow, "./bootstrap");
-                load(&mut server.flow, "./autosave");
+                load(&mut server.flow, saves_dir.join("autosave"));
                 response_commands.push(vec!["events set".to_owned(), id.to_owned()]);
             }
             other => panic!("Unknown command: {:?}", other),
@@ -250,11 +247,11 @@ pub fn handle_event(server: &mut Server, event: Event, event_json: Json) {
     send_event(server, changes, &response_commands);
 }
 
-pub fn run() {
+pub fn run(saves_dir: &Path) {
+
     let mut flow = Flow::new();
     time!("reading saved state", {
-        load(&mut flow, "./bootstrap");
-        load(&mut flow, "./autosave");
+        load(&mut flow, saves_dir.join("autosave"));
     });
 
     let senders: Vec<sender::Sender<WebSocketStream>> = Vec::new();
@@ -282,7 +279,7 @@ pub fn run() {
                 let cbor = decoder.items().next().unwrap().unwrap();
                 let json = cbor.to_json();
                 let event = FromJson::from_json(&json);
-                handle_event(&mut server, event, json);
+                handle_event(&mut server, event, json, saves_dir);
             }
         }
     }
