@@ -1,7 +1,10 @@
-/// <reference path="microReact.ts" />
-/// <reference path="ui.ts" />
 /// <reference path="api.ts" />
 /// <reference path="client.ts" />
+
+/// <reference path="microReact.ts" />
+/// <reference path="ui.ts" />
+/// <reference path="../src/uiRenderer.ts" />
+
 /// <reference path="tableEditor.ts" />
 /// <reference path="glossary.ts" />
 /// <reference path="layout.ts" />
@@ -105,7 +108,7 @@ module drawn {
         e.stopPropagation();
     }
 
-    function preventDefault(e) {
+    export function preventDefault(e) {
         e.preventDefault();
     }
 
@@ -135,28 +138,52 @@ module drawn {
 	//---------------------------------------------------------
   // Renderer
   //---------------------------------------------------------
-
-  export var renderer;
+  var perfStats;
+  export var renderer:uiRenderer.UiRenderer;
   function initRenderer() {
-    renderer = new microReact.Renderer();
-    document.body.appendChild(renderer.content);
-    renderer.queued = false;
+    let raw = new microReact.Renderer();
+    renderer = new uiRenderer.UiRenderer(raw);
+    document.body.appendChild(raw.content);
     window.addEventListener("resize", render);
+    perfStats = document.createElement("div");
+    perfStats.id = "perfStats";
+    // document.body.appendChild(perfStats);
   }
 
+  var performance = window["performance"] || {now: () => (new Date()).getTime()}
+
+
   export function render() {
-   if(renderer.queued === false) {
+    if(renderer.queued === false) {
       renderer.queued = true;
       // @FIXME: why does using request animation frame cause events to stack up and the renderer to get behind?
       setTimeout(function() {
       // requestAnimationFrame(function() {
+
         var start = performance.now();
-        var tree = window["drawn"].root();
+        api.ixer.clearTable("uiWarning");
+        let warnings;
+        do {
+          var tree = window["drawn"].root();
+          let editorElemIds = (ixer.select("tag", {tag: "editor-ui"}) || []).map((tag) => tag["tag: view"]);
+          var total = performance.now() - start;
+          if(total > 10) {
+            console.log("Slow root: " + total);
+          }
+          perfStats.textContent = "";
+          perfStats.textContent += `root: ${total.toFixed(2)}`;
+          var start = performance.now();
+          editorElemIds.unshift(tree);
+          warnings = renderer.render(editorElemIds);
+          if(warnings.length) {
+            api.ixer.handleDiffs(api.toDiffs(
+              api.insert("uiWarning", warnings)
+            ))
+          }
+        } while(warnings.length > 0);
+
         var total = performance.now() - start;
-        if(total > 10) {
-          console.log("Slow root: " + total);
-        }
-        renderer.render(tree);
+        perfStats.textContent += ` | render: ${total.toFixed(2)}`;
         renderer.queued = false;
       }, 16);
     }
@@ -365,18 +392,18 @@ module drawn {
 
     // We need to find the lowest priority to make sure that we come before it. We can't use
     // length here because fields can be added and removed out of order.
-    let minFieldPriority = Infinity;
+    let maxFieldPriority = -Infinity;
     for(let field of fields) {
       var order = ixer.selectOne("display order", {id: field["field: field"]});
       if(!order) continue;
-      minFieldPriority = Math.min(order["display order: priority"], minFieldPriority);
+      maxFieldPriority = Math.max(order["display order: priority"], maxFieldPriority);
     }
     // if we didn't find one, we default to -1, otherwise we take one less than the min
-    let fieldPriority = minFieldPriority === Infinity ? -1 : minFieldPriority - 1;
+    let fieldPriority = maxFieldPriority === -Infinity ? 0 : maxFieldPriority + 1;
 
     var neueField = api.insert("field", {view: viewId, kind: "output", dependents: {
       "display name": {name: name},
-      "display order": {priority: fieldPriority - offset}
+      "display order": {priority: fieldPriority + offset}
     }});
     var fieldId = neueField.content.field;
     diffs.push(neueField);
@@ -454,14 +481,15 @@ module drawn {
     return diffs;
   }
 
-  export function addSourceFieldVariable(itemId, sourceViewId, sourceId, fieldId) {
+  export function addSourceFieldVariable(itemId, sourceViewId, sourceId, fieldId, selectAll = false, constantValue?) {
     let diffs = [];
     let kind;
     // check if we're adding an ordinal
     if(fieldId === "ordinal") {
       kind = "ordinal";
     } else {
-      kind = ixer.selectOne("field", {field: fieldId})["field: kind"];
+      let field = ixer.selectOne("field", {field: fieldId});
+      kind = field ? field["field: kind"] : "output";
     }
     // add a variable
     let variableId = uuid();
@@ -473,17 +501,21 @@ module drawn {
       // bind the field to it
       diffs.push(api.insert("binding", {variable: variableId, source: sourceId, field: fieldId}));
     }
-    if(kind === "output" || kind === "ordinal") {
+    if(kind === "output" || kind === "ordinal" || selectAll) {
       // select the field
       diffs.push.apply(diffs, dispatch("addSelectToQuery", {viewId: itemId, variableId: variableId, name: code.name(fieldId) || fieldId}, true));
-    } else {
+    }
+    if(kind !== "output" && kind !== "ordinal" && constantValue === undefined) {
       // otherwise we're an input field and we need to add a default constant value
       diffs.push(api.insert("constant binding", {variable: variableId, value: api.newPrimitiveDefaults[sourceViewId][fieldId]}));
+
+    } else if(constantValue !== undefined) {
+      diffs.push(api.insert("constant binding", {variable: variableId, value: constantValue}));
     }
     return diffs;
   }
 
-  function removeView(viewId) {
+  export function removeView(viewId) {
     let diffs = [
       // removing the view will automatically remove the fields
       api.remove("view", {view: viewId})
@@ -1487,16 +1519,25 @@ module drawn {
         }
 
         // Map record index to fieldId and create new CSV fields.
+        let madlib = name + ":";
         var mapping = [];
         for(var ix = 0; ix < columns; ix++) {
           var {fieldId, diffs: fieldDiffs} = addField(tableId, names[ix], ix);
           mapping[ix] = fieldId;
           diffs.push.apply(diffs, fieldDiffs);
+          madlib += " ?,";
         }
+        madlib = madlib.substring(0, madlib.length-1);
+        diffs.push(api.insert("madlib", {view: tableId, madlib: madlib}));
 
         // @HACK: We need to wait until the new fields have been processed and old fields removed to add the data.
         setTimeout(function() {
           dispatch("importCsvData", {tableId, data, mapping});
+          // if we're using the madlib experiment, we need to also dispatch to add a new
+          // cell with a source for this guy in there.
+          if(window["madlib"]) {
+            window["madlib"].dispatch("createCellOnImport", {viewId: tableId, madlib});
+          }
         }, 0);
       break;
       case "importCsvData":
@@ -1656,12 +1697,12 @@ module drawn {
         diffs = dispatch("hideTooltip", {}, true);
         localState.loading = false;
       break;
-      case "toggleHidden":
-        var hidden = localStorage["showHidden"];
+      case "toggleSystem":
+        var hidden = localStorage["showSystem"];
         if(hidden) {
-          localStorage["showHidden"] = "";
+          localStorage["showSystem"] = "";
         } else {
-          localStorage["showHidden"] = "show";
+          localStorage["showSystem"] = "show";
         }
         diffs = dispatch("updateSearch", {value: localState.searchingFor || ""}, true);
       break;
@@ -1840,7 +1881,7 @@ module drawn {
     }
 
     for(let viewId of viewIds) {
-      if(!localStorage["showHidden"] && ixer.selectOne("tag", {view: viewId, tag: "hidden"})) {
+      if(!localStorage["showSystem"] && ixer.selectOne("tag", {view: viewId, tag: "system"})) {
         continue;
       }
       let name = code.name(viewId);
@@ -2190,7 +2231,7 @@ module drawn {
     viewIds.forEach((viewId) : any => {
       let view = ixer.selectOne("view", {view: viewId});
       let kind = view["view: kind"];
-      if(!searching && !localStorage["showHidden"] && ixer.selectOne("tag", {view: viewId, tag: "hidden"})) {
+      if(!searching && !localStorage["showSystem"] && ixer.selectOne("tag", {view: viewId, tag: "system"})) {
         return;
       }
       if(kind === "join") {
@@ -2236,11 +2277,11 @@ module drawn {
   function visibleItemCount() {
     let allViews = ixer.select("view", {});
     let totalCount = allViews.length;
-    // hidden views don't contribute to the count
-    if(!localStorage["showHidden"]) {
-      totalCount -= ixer.select("tag", {tag: "hidden"}).length
+    // system views don't contribute to the count
+    if(!localStorage["showSystem"]) {
+      totalCount -= ixer.select("tag", {tag: "system"}).length
     }
-    // primtive views don't contribute to the count
+    // primitive views don't contribute to the count
     totalCount -= ixer.select("view", {kind: "primitive"}).length;
     return totalCount;
   }
@@ -2443,11 +2484,11 @@ module drawn {
       id: "preferences",
       title: "Preferences",
       content: () => {
-        let showHidden;
-        if(localStorage["showHidden"]) {
-          showHidden = ui.button({click: toggleHidden, text: "Hide hidden"});
+        let showSystem;
+        if(localStorage["showSystem"]) {
+          showSystem = ui.button({click: toggleSystem, text: "Hide system tables"});
         } else {
-          showHidden = ui.button({click: toggleHidden, text: "Show hidden"});
+          showSystem = ui.button({click: toggleSystem, text: "Show system tables"});
         }
         let theme;
         let curTheme = localStorage["theme"];
@@ -2458,14 +2499,14 @@ module drawn {
         }
         return {c: "preferences", semantic: "pane::preferences", children: [
           theme,
-          showHidden,
+          showSystem,
         ]};
       }
     }
   ];
 
-  function toggleHidden(e, elem) {
-    dispatch("toggleHidden", {});
+  function toggleSystem(e, elem) {
+    dispatch("toggleSystem", {});
   }
 
   function toggleTheme(e, elem) {
@@ -3735,6 +3776,7 @@ module drawn {
       let files = e.dataTransfer.files;
       if(files.length) {
         dispatch("importFiles", {files: files});
+        e.stopPropagation();
       }
       e.preventDefault();
     });
@@ -3774,6 +3816,7 @@ module drawn {
     initRenderer();
     initInputHandling();
     ui.init(localState, render);
+    uiEditor.init(localState, render);
     loadPositions();
     render();
   });

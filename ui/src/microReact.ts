@@ -15,6 +15,7 @@ module microReact {
     children?:Element[]
     ix?:number
     key?:string
+    dirty?:boolean
     semantic?:string
     debug?:any
 
@@ -31,6 +32,7 @@ module microReact {
     value?:string
 
     // Styles (Structure)
+    flex?:number|string
     left?:number|string
     top?:number|string
     width?:number|string
@@ -126,7 +128,6 @@ module microReact {
     tree:{[id:string]: Element};
     postRenders: Element[];
     lastDiff: {adds: string[], updates: {}};
-    queued: boolean;
     handleEvent: (any);
     constructor() {
       this.content = document.createElement("div");
@@ -219,6 +220,7 @@ module microReact {
         if(cur.tabindex !== prev.tabindex) div.setAttribute("tabindex", cur.tabindex);
         if(cur.href !== prev.href) div.setAttribute("href", cur.href);
 
+        if(cur.flex !== prev.flex)  style.flex = cur.flex === undefined ? "" : cur.flex;
         if(cur.left !== prev.left)  style.left = cur.left === undefined ? "" : cur.left;
         if(cur.top !== prev.top) style.top = cur.top === undefined ? "" : cur.top;
         if(cur.height !== prev.height) style.height = cur.height === undefined ? "auto" : cur.height;
@@ -303,10 +305,12 @@ module microReact {
 
         if(type === "added" || type === "replaced" || type === "moved") {
           var parentEl = elementCache[cur.parent];
-          if(cur.ix >= parentEl.children.length) {
-            parentEl.appendChild(div);
-          } else {
-            parentEl.insertBefore(div, parentEl.children[cur.ix]);
+          if(parentEl) {
+            if(cur.ix >= parentEl.children.length) {
+              parentEl.appendChild(div);
+            } else {
+              parentEl.insertBefore(div, parentEl.children[cur.ix]);
+            }
           }
         }
       }
@@ -336,7 +340,8 @@ module microReact {
           continue;
         }
 
-        if(curA.c === curB.c
+        if(!curB.dirty
+           && curA.c === curB.c
            && curA.key === curB.key
            && curA.tabindex === curB.tabindex
            && curA.href === curB.href
@@ -349,6 +354,7 @@ module microReact {
            && curA.checked === curB.checked
            && curA.text === curB.text
            && curA.top === curB.top
+           && curA.flex === curB.flex
            && curA.left === curB.left
            && curA.width === curB.width
            && curA.height === curB.height
@@ -438,29 +444,36 @@ module microReact {
       for(var i = 0, len = postRenders.length; i < len; i++) {
         var elem = postRenders[i];
         var id = elem.id;
-        if(diff[id] === "updated" || diff[id] === "added") {
+        if(diff[id] === "updated" || diff[id] === "added" || diff[id] === "replaced" || elem.dirty) {
           elem.postRender(elementCache[elem.id], elem);
         }
       }
     }
 
-    render(elem) {
-      var start = now();
-      this.reset();
-      var post = this.prepare(elem);
-      var prepare = now();
-      var d = this.diff();
-      var diff = now();
+    render(elems:Element[]) {
+        this.reset();
+      // We sort elements by depth to allow them to be self referential.
+      elems.sort((a, b) => (a.parent ? a.parent.split("__").length : 0) - (b.parent ? b.parent.split("__").length : 0));
+      let start = now();
+      for(let elem of elems) {
+        let post = this.prepare(elem);
+
+      }
+      let prepare = now();
+      let d = this.diff();
+      let diff = now();
       this.domify();
-      var domify = now();
+      let domify = now();
       this.postDomify();
-      var postDomify = now();
-      var time = now() - start;
+      let postDomify = now();
+      let time = now() - start;
       if(time > 5) {
-                console.log("slow render (> 5ms): ", time, {prepare: prepare - start,
-                                                            diff: diff - prepare,
-                                                            domify: domify - diff,
-                                                            postDomify: postDomify - domify});
+        console.log("slow render (> 5ms): ", time, {
+          prepare: prepare - start,
+          diff: diff - prepare,
+          domify: domify - diff,
+          postDomify: postDomify - domify
+        });
       }
     }
   }
